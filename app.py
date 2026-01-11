@@ -4,231 +4,265 @@ import os
 import tempfile
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+import json
 import io
 
 # --- إعدادات الصفحة ---
 st.set_page_config(
-    page_title="Lotus Calls Quality",
+    page_title="Lotus Professional QA System",
     page_icon="🎧",
     layout="wide"
 )
 
-# --- النصوص ثنائية اللغة ---
-translations = {
-    'en': {
-        'app_title': 'Lotus Calls Quality Analysis',
-        'sidebar_title': 'Settings & Info',
-        'lang_select': 'Language / اللغة',
-        'api_key_label': 'Enter OpenAI API Key',
-        'api_key_warning': '⚠️ Enter API Key to run the app',
-        'api_key_info': '👈 Please enter API Key in the sidebar or set it in Secrets.',
-        'file_uploader_label': 'Upload Call Files (MP3, WAV, M4A)',
-        'start_analysis_btn': '🚀 Start Analysis of {len} calls',
-        'call_details_header': '📝 Call Details',
-        'analyzing_spinner': 'Analyzing: {file_name}...',
-        'call_expander': '📞 {file_name} - {score}/10',
-        'topic_label': '**Topic:**',
-        'dashboard_header': '📈 Consolidated Analysis Dashboard',
-        'metric_avg_score': 'Average Score',
-        'metric_call_count': 'Total Calls',
-        'metric_min_score': 'Lowest Score',
-        'chart_sentiment': 'Sentiment Distribution',
-        'chart_topics': 'Call Topics & Scores',
-        'download_btn': '📥 Download Report (Excel)',
-        'error_msg': 'Error in file {file_name}: {error}',
-    },
-    'ar': {
-        'app_title': 'نظام تحليل جودة مكالمات لوتس',
-        'sidebar_title': 'الإعدادات والمعلومات',
-        'lang_select': 'اللغة / Language',
-        'api_key_label': 'أدخل OpenAI API Key',
-        'api_key_warning': '⚠️ أدخل المفتاح ليعمل البرنامج',
-        'api_key_info': '👈 يرجى إدخال مفتاح API في القائمة الجانبية أو إعداده في Secrets.',
-        'file_uploader_label': 'ارفع ملفات المكالمات (MP3, WAV, M4A)',
-        'start_analysis_btn': '🚀 بدء تحليل {len} مكالمات',
-        'call_details_header': '📝 تفاصيل المكالمات',
-        'analyzing_spinner': 'جاري تحليل: {file_name}...',
-        'call_expander': '📞 {file_name} - {score}/10',
-        'topic_label': '**الموضوع:**',
-        'dashboard_header': '📈 لوحة التحليلات المجمعة',
-        'metric_avg_score': 'متوسط الأداء',
-        'metric_call_count': 'عدد المكالمات',
-        'metric_min_score': 'أقل تقييم',
-        'chart_sentiment': 'توزيع المشاعر',
-        'chart_topics': 'مواضيع المكالمات والتقييم',
-        'download_btn': '📥 تحميل التقرير (Excel)',
-        'error_msg': 'حدث خطأ في الملف {file_name}: {error}',
-    }
+# --- معايير التقييم (مستخرجة من الصور) ---
+QA_CRITERIA = {
+    "Non-Critical": [
+        "Greeting", "Voice Tone", "Using Customer's Name", 
+        "Active Listening & Interruption", "Using Professional Language", 
+        "Hold & Transfer Processes", "Mute/Dead Air", "Closing",
+        "Collecting and Verifying Data"
+    ],
+    "End User Critical": [
+        "Entering Collected Data Correctly", "Entering Transaction Correctly",
+        "Providing Accurate Information", "Inappropriate/Rude Behavior",
+        "Controlling the Call", "Documenting Call Details"
+    ],
+    "Compliance Critical": [
+        "Sharing Customer Data with Other Party"
+    ]
 }
 
-# --- الشريط الجانبي وتحديد اللغة ---
-with st.sidebar:
-    # عرض اللوجو
-    st.image("image_5.png", use_container_width=True) #
-    
-    st.title(translations['ar']['sidebar_title'])
-    
-    # اختيار اللغة
-    lang = st.selectbox(translations['ar']['lang_select'], ('Arabic', 'English'))
-    lang_code = 'ar' if lang == 'Arabic' else 'en'
-    t = translations[lang_code] # تحديد مجموعة النصوص
+# --- النصوص والترجمة ---
+translations = {
+    'ar': {
+        'title': 'نظام لوتس لتحليل جودة المكالمات (QA Automation)',
+        'upload_label': 'رفع تسجيلات المكالمات',
+        'sidebar': 'الإعدادات',
+        'start_btn': 'ابدأ التحليل الذكي لـ {count} مكالمات',
+        'analyzing': 'جاري معالجة: {file}... (فصل المتحدثين + تقييم المعايير)',
+        'result_header': 'نتائج التقييم',
+        'critical_alert': '⚠️ خطأ قاتل (Critical Error)',
+        'score': 'النتيجة النهائية',
+        'agent': 'الموظف',
+        'customer': 'العميل',
+        'download': 'تحميل تقرير Excel شامل',
+        'pass': 'مطابق',
+        'fail': 'غير مطابق',
+        'na': 'غير منطبق'
+    }
+}
+t = translations['ar']
 
-    # التعامل مع مفتاح API
-    api_key = None
-    if "OPENAI_API_KEY" in st.secrets:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    else:
-        api_key = st.text_input(t['api_key_label'], type="password")
-        if not api_key:
-            st.warning(t['api_key_warning'])
-
-# --- التنسيق الجمالي ---
-st.markdown(f"""
+# --- التنسيق (CSS) ---
+st.markdown("""
 <style>
-    .stApp {{background-color: #f4f7f6;}}
-    h1 {{ color: #004d40; }}
-    .metric-container {{
-        background-color: white;
-        padding: 15px;
-        border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        text-align: center;
-    }}
+    .stApp {background-color: #f0f2f6;}
+    .pass-badge {background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
+    .fail-badge {background-color: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; font-weight: bold;}
+    .critical-fail {border: 2px solid red; background-color: #ffe6e6; padding: 10px; border-radius: 5px;}
+    .metric-box {background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- الدوال المساعدة ---
+# --- الشريط الجانبي ---
+with st.sidebar:
+    st.image("image_5.png", use_container_width=True) # تأكد من وجود الصورة
+    st.title(t['sidebar'])
+    
+    api_key = st.text_input("OpenAI API Key", type="password")
+    if not api_key and "OPENAI_API_KEY" in st.secrets:
+        api_key = st.secrets["OPENAI_API_KEY"]
+        
+    st.info("💡 هذا النظام يستخدم GPT-4o لفصل المتحدثين بدقة وتطبيق معايير الـ QA الخاصة بالشركة.")
+
+# --- دوال الذكاء الاصطناعي ---
+
 def transcribe_audio(client, audio_path):
+    """تحويل الصوت لنص خام"""
     with open(audio_path, "rb") as audio_file:
         return client.audio.transcriptions.create(
             model="whisper-1", file=audio_file, response_format="text"
         )
 
-def analyze_call_data(client, text):
+def format_dialogue(client, raw_text):
+    """مرحلة 1: تحويل النص الخام إلى حوار منظم (Agent vs Customer)"""
     prompt = f"""
-    حلل نص المكالمة التالي واستخرج البيانات بصيغة JSON فقط:
-    1. "score": رقم من 1 إلى 10 لتقييم الموظف.
-    2. "sentiment": (Positive, Negative, Neutral).
-    3. "topic": موضوع المكالمة في كلمة أو كلمتين (مثلاً: فاتورة، عطل فني، شكوى).
-    4. "summary": ملخص عربي في سطر واحد.
+    You are a transcript formatter. Convert the following raw Arabic text into a structured dialogue script.
+    Identify the "Agent" (Call Center Employee) and the "Customer" based on context (e.g., who says 'Hello, this is [Name] from [Company]').
     
-    النص: "{text}"
-    Output Format: {{"score": 8, "sentiment": "Positive", "topic": "Billing", "summary": "..."}}
+    Format:
+    Agent: [Text]
+    Customer: [Text]
+    
+    Raw Text:
+    {raw_text}
     """
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo", 
-        messages=[{"role": "system", "content": "You are a data extractor. Output JSON only."},
-                  {"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
-    import json
-    return json.loads(response.choices[0].message.content)
-
-def detailed_feedback(client, text):
-    prompt = f"""
-    قم بتقديم نقد بناء للموظف بناء على المكالمة:
-    - نقاط القوة.
-    - نقاط تحتاج لتحسين.
-    - هل التزم بآداب الحديث؟
-    النص: {text}
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
+        model="gpt-4o", 
+        messages=[{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}],
+        temperature=0.2
     )
     return response.choices[0].message.content
 
-# --- التطبيق الرئيسي ---
-st.title(t['app_title']) # استخدام العنوان حسب اللغة
+def analyze_qa_criteria(client, dialogue):
+    """مرحلة 2: تقييم الجودة بناءً على المعايير المحددة"""
+    
+    criteria_json = json.dumps(QA_CRITERIA, ensure_ascii=False)
+    
+    prompt = f"""
+    Act as a strict Quality Assurance (QA) Specialist. Evaluate the following Call Center dialogue based on the provided Criteria List.
+    
+    **Dialogue:**
+    {dialogue}
+    
+    **Criteria List:**
+    {criteria_json}
+    
+    **Instructions:**
+    1. For EACH item in the criteria list, determine if it is "PASS", "FAIL", or "N/A" (Not Applicable).
+    2. Provide a short "reason" for the evaluation (in Arabic).
+    3. Calculate a "Final Score" out of 100.
+       - Start with 100.
+       - Deduct 5 points for each "Non-Critical" FAIL.
+       - Deduct 100 points (Zero out) for ANY "Critical" FAIL (End User or Compliance).
+    4. Provide a brief Arabic summary of the call.
+    
+    **Output JSON Format (Strictly):**
+    {{
+        "final_score": 85,
+        "critical_error_found": false,
+        "summary": "ملخص المكالمة...",
+        "details": [
+            {{"category": "Non-Critical", "item": "Greeting", "status": "PASS", "reason": "بدأ بالتحية القياسية"}},
+            {{"category": "End User Critical", "item": "Providing Accurate Information", "status": "FAIL", "reason": "أعطى معلومة خاطئة عن الفاتورة"}}
+        ]
+    }}
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "system", "content": "You are a JSON output machine."}, {"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0
+    )
+    return json.loads(response.choices[0].message.content)
+
+# --- الواجهة الرئيسية ---
+st.title(t['title'])
 
 if not api_key:
-    st.info(t['api_key_info'])
+    st.warning("⚠️ يرجى إدخال مفتاح API للمتابعة.")
     st.stop()
 
 client = openai.OpenAI(api_key=api_key)
 
-uploaded_files = st.file_uploader(t['file_uploader_label'], 
-                                  type=['mp3', 'wav', 'm4a'], accept_multiple_files=True)
+uploaded_files = st.file_uploader(t['upload_label'], type=['mp3', 'wav', 'm4a'], accept_multiple_files=True)
 
-if uploaded_files:
-    if st.button(t['start_analysis_btn'].format(len=len(uploaded_files))):
-        
-        results = []
-        progress_bar = st.progress(0)
-        st.subheader(t['call_details_header'])
-        
-        for idx, file in enumerate(uploaded_files):
-            try:
-                with st.spinner(t['analyzing_spinner'].format(file_name=file.name)):
-                    # حفظ مؤقت
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.name.split('.')[-1]}") as tmp:
-                        tmp.write(file.getvalue())
-                        tmp_path = tmp.name
-                    
-                    # العمليات
-                    transcript = transcribe_audio(client, tmp_path)
-                    data_points = analyze_call_data(client, transcript)
-                    feedback = detailed_feedback(client, transcript)
-                    
-                    score = data_points.get('score', 0)
-                    # تجميع البيانات
-                    call_record = {
-                        "اسم الملف" if lang_code == 'ar' else "File Name": file.name,
-                        "التقييم (10)" if lang_code == 'ar' else "Score (10)": score,
-                        "المشاعر" if lang_code == 'ar' else "Sentiment": data_points.get('sentiment', 'Neutral'),
-                        "الموضوع" if lang_code == 'ar' else "Topic": data_points.get('topic', 'General'),
-                        "الملخص" if lang_code == 'ar' else "Summary": data_points.get('summary', ''),
-                        "النص الكامل" if lang_code == 'ar' else "Full Transcript": transcript,
-                        "التقرير التفصيلي" if lang_code == 'ar' else "Detailed Report": feedback
-                    }
-                    results.append(call_record)
-                    
-                    # عرض سريع
-                    with st.expander(t['call_expander'].format(file_name=file.name, score=score)):
-                        st.write(f"{t['topic_label']} {data_points.get('topic')}")
-                        st.info(feedback)
-                    
-                    os.remove(tmp_path)
-                    progress_bar.progress((idx + 1) / len(uploaded_files))
-            except Exception as e:
-                st.error(t['error_msg'].format(file_name=file.name, error=e))
-
-        # --- Dashboard ---
-        if results:
-            st.markdown("---")
-            st.header(t['dashboard_header'])
-            df = pd.DataFrame(results)
-            
-            score_col = "التقييم (10)" if lang_code == 'ar' else "Score (10)"
-            sentiment_col = "المشاعر" if lang_code == 'ar' else "Sentiment"
-            topic_col = "الموضوع" if lang_code == 'ar' else "Topic"
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric(t['metric_avg_score'], f"{df[score_col].mean():.1f}/10")
-            col2.metric(t['metric_call_count'], len(df))
-            col3.metric(t['metric_min_score'], df[score_col].min())
-
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader(t['chart_sentiment'])
-                # إعادة رسم الرسم البياني الدائري للمشاعر
-                fig_pie = px.pie(df, names=sentiment_col, color=sentiment_col, 
-                             color_discrete_map={'Positive':'#4CAF50', 'Negative':'#EF5350', 'Neutral':'#FFC107'})
-                st.plotly_chart(fig_pie, use_container_width=True)
-            with c2:
-                st.subheader(t['chart_topics'])
-                # إعادة رسم الرسم البياني الشريطي للمواضيع
-                fig_bar = px.bar(df, x=topic_col, y=score_col, color=score_col)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            # التصدير
-            def to_excel(df):
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
-                return output.getvalue()
+if uploaded_files and st.button(t['start_btn'].format(count=len(uploaded_files))):
+    
+    full_report_data = []
+    
+    for file in uploaded_files:
+        try:
+            with st.spinner(t['analyzing'].format(file=file.name)):
+                # 1. حفظ الملف مؤقتاً
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.name.split('.')[-1]}") as tmp:
+                    tmp.write(file.getvalue())
+                    tmp_path = tmp.name
                 
-            st.download_button(t['download_btn'], data=to_excel(df), 
-                               file_name='Report.xlsx', 
-                               mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                # 2. التحويل النصي
+                raw_text = transcribe_audio(client, tmp_path)
+                
+                # 3. تنظيم الحوار (فصل المتحدثين)
+                structured_dialogue = format_dialogue(client, raw_text)
+                
+                # 4. تحليل الجودة
+                qa_result = analyze_qa_criteria(client, structured_dialogue)
+                
+                # تنظيف
+                os.remove(tmp_path)
+                
+                # عرض النتائج لهذه المكالمة
+                score_color = "red" if qa_result['final_score'] < 70 else "green"
+                
+                with st.expander(f"📞 {file.name} | النتيجة: :{score_color}[{qa_result['final_score']}%]"):
+                    
+                    # تنبيه الأخطاء القاتلة
+                    if qa_result.get('critical_error_found'):
+                        st.error(f"🚨 {t['critical_alert']} - تم تصفير النتيجة!")
+                    
+                    c1, c2 = st.columns([1, 2])
+                    
+                    with c1:
+                        st.markdown(f"**الملخص:** {qa_result['summary']}")
+                        st.markdown("**تفاصيل التقييم:**")
+                        
+                        # إنشاء جدول للنتائج
+                        details_df = pd.DataFrame(qa_result['details'])
+                        
+                        # دالة لتلوين الخلايا
+                        def color_status(val):
+                            color = '#d4edda' if val == 'PASS' else '#f8d7da' if val == 'FAIL' else '#fff3cd'
+                            return f'background-color: {color}; color: black; font-weight: bold;'
+                        
+                        st.dataframe(details_df.style.applymap(color_status, subset=['status']), use_container_width=True)
+
+                    with c2:
+                        st.markdown("**📝 سجل المكالمة (Agent vs Customer):**")
+                        st.text_area("نص المكالمة", structured_dialogue, height=400)
+                
+                # تجميع البيانات للتقرير النهائي
+                flat_record = {
+                    "File Name": file.name,
+                    "Final Score": qa_result['final_score'],
+                    "Critical Error": "YES" if qa_result.get('critical_error_found') else "NO",
+                    "Summary": qa_result['summary']
+                }
+                # إضافة تفاصيل البنود كأعمدة
+                for item in qa_result['details']:
+                    flat_record[item['item']] = item['status']
+                    
+                full_report_data.append(flat_record)
+
+        except Exception as e:
+            st.error(f"حدث خطأ في الملف {file.name}: {str(e)}")
+
+    # --- لوحة القيادة النهائية ---
+    if full_report_data:
+        st.markdown("---")
+        st.header("📊 التحليل المجمع (Dashboard)")
+        
+        df_report = pd.DataFrame(full_report_data)
+        
+        # مؤشرات الأداء
+        m1, m2, m3 = st.columns(3)
+        avg_score = df_report['Final Score'].mean()
+        m1.metric("متوسط الجودة", f"{avg_score:.1f}%")
+        m2.metric("عدد المكالمات", len(df_report))
+        fatal_count = len(df_report[df_report['Critical Error'] == 'YES'])
+        m3.metric("مكالمات بها أخطاء قاتلة", fatal_count, delta_color="inverse")
+        
+        # رسم بياني للأخطاء
+        st.subheader("توزيع نتائج البنود (Pass vs Fail)")
+        
+        # تحويل البيانات للرسم
+        long_df = pd.melt(df_report, id_vars=['File Name', 'Final Score', 'Critical Error', 'Summary'], 
+                          var_name='Criteria', value_name='Status')
+        
+        fig = px.histogram(long_df, x='Criteria', color='Status', 
+                           color_discrete_map={'PASS': '#28a745', 'FAIL': '#dc3545', 'N/A': '#6c757d'},
+                           barmode='group')
+        fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # زر التحميل
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_report.to_excel(writer, index=False)
+        
+        st.download_button(
+            label=t['download'],
+            data=output.getvalue(),
+            file_name='Lotus_QA_Report.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
